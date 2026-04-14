@@ -48,6 +48,9 @@ jobs:
             --zip-file fileb://producer/package/lambda.zip \
             --publish
 
+          echo "Esperando a que el estado de la Lambda sea exitoso..."
+          aws lambda wait function-updated --function-name neopay-pagos-producer-$STAGE
+
       - name: Update Lambda environment variables
         run: |
           STAGE=${{ github.event.inputs.stage || 'dev' }}

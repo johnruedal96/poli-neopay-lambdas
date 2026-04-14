@@ -47,6 +47,9 @@ jobs:
             --function-name neopay-pagos-consumer-$STAGE \
             --zip-file fileb://consumer/package/lambda.zip \
             --publish
+          
+          echo "Esperando a que el estado de la Lambda sea exitoso..."
+          aws lambda wait function-updated --function-name neopay-pagos-consumer-$STAGE
 
       - name: Update Lambda environment variables
         run: |
