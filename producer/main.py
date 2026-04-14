@@ -10,7 +10,6 @@ import boto3
 QUEUE_URL = os.environ["QUEUE_URL"]
 sqs = boto3.client("sqs")
 
-
 def handler(event, context):
     try:
         body = json.loads(event.get("body") or "{}")

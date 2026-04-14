@@ -37,7 +37,6 @@ def _ensure_table(cur) -> None:
         """
     )
 
-
 def handler(event, context):
     records = event.get("Records", [])
     if not records:
