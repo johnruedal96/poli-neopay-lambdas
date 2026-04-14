@@ -1,0 +1,55 @@
+name: Deploy Consumer Lambda
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'consumer/**'
+  workflow_dispatch:
+    inputs:
+      stage:
+        description: 'Stage (dev, prod)'
+        default: 'dev'
+        required: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Build Lambda package
+        run: |
+          cd consumer
+          pip install -r requirements.txt -t ./package
+          cp main.py package/
+          cd package
+          zip -r lambda.zip *
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: us-east-1
+
+      - name: Update Lambda code
+        run: |
+          STAGE=${{ github.event.inputs.stage || 'dev' }}
+          aws lambda update-function-code \
+            --function-name neopay-pagos-consumer-$STAGE \
+            --zip-file fileb://consumer/package/lambda.zip \
+            --publish
+
+      - name: Update Lambda environment variables
+        run: |
+          STAGE=${{ github.event.inputs.stage || 'dev' }}
+          aws lambda update-function-configuration \
+            --function-name neopay-pagos-consumer-$STAGE \
+            --environment "Variables={DB_HOST=${{ secrets.DB_HOST }},DB_PORT=${{ secrets.DB_PORT }},DB_NAME=${{ secrets.DB_NAME }},DB_USER=${{ secrets.DB_USER }},DB_PASSWORD=${{ secrets.DB_PASSWORD }}}"
