@@ -144,8 +144,7 @@ jobs:
             --name canary \
             --function-version $NEW_VERSION \
             --routing-config "{\"AdditionalVersionWeights\": {\"$NEW_VERSION\": 0.1}}" || \
-
-          aws lambda create-alias
+          aws lambda create-alias \
             --function-name neopay-pagos-consumer-${{ env.STAGE }} \
             --name canary \
             --function-version $NEW_VERSION \
