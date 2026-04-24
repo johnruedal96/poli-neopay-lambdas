@@ -10,6 +10,7 @@ on:
 env:
   PYTHON_VERSION: '3.12'
   AWS_REGION: us-east-1
+  STAGE: dev
 
 jobs:
   lint-and-security:
@@ -82,7 +83,7 @@ jobs:
           path: consumer/package/lambda.zip
 
   deploy:
-    name: Deploy
+    name: Deploy to Dev (Canary)
     runs-on: ubuntu-latest
     needs: build
     if: github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'
@@ -108,19 +109,17 @@ jobs:
 
       - name: Deploy Consumer Lambda (Canary - 10% traffic)
         run: |
-          STAGE=dev
+          STAGE=${{ env.STAGE }}
 
-          # Publish new version
           NEW_VERSION=$(aws lambda publish-version \
             --function-name neopay-pagos-consumer-$STAGE \
-            --zip-file fileb://consumer/package/lambda.zip \
+            --zip-file fileb://$(cat consumer/package/lambda.zip | base64) \
             --query 'Version' \
             --output text)
 
           echo "Published version: $NEW_VERSION"
           echo "NEW_VERSION=$NEW_VERSION" >> $GITHUB_ENV
 
-          # Create/update alias with 10% weight to new version
           aws lambda put-alias \
             --function-name neopay-pagos-consumer-$STAGE \
             --name canary \
@@ -131,18 +130,17 @@ jobs:
 
       - name: Update Consumer Environment Variables
         run: |
-          STAGE=dev
+          STAGE=${{ env.STAGE }}
           aws lambda update-function-configuration \
             --function-name neopay-pagos-consumer-$STAGE \
-            --environment "Variables={DB_HOST=${{ secrets.DB_HOST }},DB_PORT=${{ secrets.DB_PORT }},DB_NAME=${{ secrets.DB_NAME }},DB_USER=${{ secrets.DB_USER }},DB_PASSWORD=${{ secrets.DB_PASSWORD }}}"
+            --environment "Variables={DB_HOST=${{ secrets.DB_HOST }},DB_PORT=${{ secrets.DB_PORT }},DB_NAME=${{ secrets.DB_NAME }},DB_USER=${{ secrets.DB_USER }},DB_PASSWORD=${{ secrets.DB_PASSWORD }}"
 
       - name: Wait and Monitor (Canary Period)
         run: |
           echo "Waiting 60 seconds for canary evaluation..."
           sleep 60
 
-          # Check for errors in CloudWatch
-          LOG_GROUP="/aws/lambda/neopay-pagos-consumer-prod"
+          LOG_GROUP="/aws/lambda/neopay-pagos-consumer-${{ env.STAGE }}"
           ERRORS=$(aws logs filter-log-events \
             --log-group-name "$LOG_GROUP" \
             --start-time $(date -d '5 minutes ago' +%s)000 \
@@ -162,15 +160,13 @@ jobs:
       - name: Promote Canary to Production
         if: success()
         run: |
-          STAGE=dev
+          STAGE=${{ env.STAGE }}
 
-          # Get latest version
           VERSION=$(aws lambda get-function \
             --function-name neopay-pagos-consumer-$STAGE \
             --query 'Configuration.Version' \
             --output text)
 
-          # Update alias to 100% traffic
           aws lambda update-alias \
             --function-name neopay-pagos-consumer-$STAGE \
             --name canary \
@@ -182,10 +178,9 @@ jobs:
       - name: Rollback on Failure
         if: failure()
         run: |
-          STAGE=dev
+          STAGE=${{ env.STAGE }}
           echo "⚠ Deployment failed - rolling back to previous version"
 
-          # Get previous stable version from alias
           PREV_VERSION=$(aws lambda list-aliases \
             --function-name neopay-pagos-consumer-$STAGE \
             --query 'Aliases[?Name==`canary`].FunctionVersion' \
