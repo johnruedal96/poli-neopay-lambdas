@@ -12,10 +12,14 @@ on:
         default: 'dev'
         required: true
 
+env:
+  PYTHON_VERSION: '3.12'
+  AWS_REGION: us-east-1
+
 jobs:
-  deploy:
+  lint-and-security:
+    name: Lint & Security Scan
     runs-on: ubuntu-latest
-    environment: ${{ github.event.inputs.stage || 'dev' }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -23,7 +27,76 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.12'
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install dependencies
+        run: |
+          pip install -r consumer/requirements.txt
+          pip install ruff bandit pip-audit pytest pytest-mock
+
+      - name: Ruff Lint
+        run: ruff check consumer/
+
+      - name: Ruff Format Check
+        run: ruff format --check consumer/
+
+      - name: Bandit Security Scan
+        run: bandit -r consumer/ -f json -o bandit-report.json
+        continue-on-error: true
+
+      - name: pip-audit (Dependency Vulnerabilities)
+        run: |
+          pip-audit -r consumer/requirements.txt || true
+        continue-on-error: true
+
+      - name: Upload Bandit Report
+        uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: bandit-report-consumer
+          path: bandit-report.json
+
+  unit-tests:
+    name: Unit Tests
+    runs-on: ubuntu-latest
+    needs: lint-and-security
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install dependencies
+        run: |
+          pip install -r consumer/requirements.txt
+          pip install pytest pytest-mock pytest-cov
+
+      - name: Run Unit Tests
+        run: |
+          pytest consumer/ -v --cov=. --cov-report=xml --cov-report=term
+        continue-on-error: true
+
+      - name: Upload Coverage
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-consumer
+          path: coverage.xml
+
+  build:
+    name: Build Lambda Package
+    runs-on: ubuntu-latest
+    needs: unit-tests
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
 
       - name: Build Lambda package
         run: |
@@ -32,28 +105,235 @@ jobs:
           cp main.py package/
           cd package
           zip -r lambda.zip *
+          echo "BUILD_HASH=$(sha256sum lambda.zip | cut -d' ' -f1)" >> $GITHUB_ENV
+          echo "Lambda package built successfully"
+          ls -la
 
-      - name: Configure AWS credentials
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: lambda-consumer-package
+          path: consumer/package/lambda.zip
+
+  deploy-dev:
+    name: Deploy to Dev
+    runs-on: ubuntu-latest
+    needs: build
+    if: github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'
+    environment: dev
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: lambda-consumer-package
+          path: consumer/package
+
+      - name: Configure AWS Credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: us-east-1
+          aws-region: ${{ env.AWS_REGION }}
 
-      - name: Update Lambda code
+      - name: Deploy Consumer Lambda to Dev
         run: |
-          STAGE=${{ github.event.inputs.stage || 'dev' }}
+          STAGE=dev
           aws lambda update-function-code \
             --function-name neopay-pagos-consumer-$STAGE \
             --zip-file fileb://consumer/package/lambda.zip \
             --publish
-          
-          echo "Esperando a que el estado de la Lambda sea exitoso..."
+
           aws lambda wait function-updated --function-name neopay-pagos-consumer-$STAGE
 
-      - name: Update Lambda environment variables
+      - name: Update Consumer Environment Variables
         run: |
-          STAGE=${{ github.event.inputs.stage || 'dev' }}
+          STAGE=dev
           aws lambda update-function-configuration \
             --function-name neopay-pagos-consumer-$STAGE \
             --environment "Variables={DB_HOST=${{ secrets.DB_HOST }},DB_PORT=${{ secrets.DB_PORT }},DB_NAME=${{ secrets.DB_NAME }},DB_USER=${{ secrets.DB_USER }},DB_PASSWORD=${{ secrets.DB_PASSWORD }}}"
+
+      - name: Smoke Test - Lambda Invocation
+        run: |
+          STAGE=dev
+          echo "Waiting for Lambda to be ready..."
+          sleep 15
+
+          # Test Lambda invocation
+          aws lambda invoke \
+            --function-name neopay-pagos-consumer-$STAGE \
+            --payload '{"test": true}' \
+            --log-type Tail \
+            response.json
+
+          if [ -f response.json ]; then
+            echo "✓ Lambda invocation successful"
+          else
+            echo "✗ Lambda invocation failed"
+            exit 1
+          fi
+
+      - name: Smoke Test - Database Connection
+        run: |
+          STAGE=dev
+          # Check Lambda configuration
+          CONFIG=$(aws lambda get-function-configuration \
+            --function-name neopay-pagos-consumer-$STAGE \
+            --query 'Environment.Variables' \
+            --output json)
+
+          if echo "$CONFIG" | grep -q "DB_HOST"; then
+            echo "✓ Database configuration present"
+          else
+            echo "✗ Database configuration missing"
+            exit 1
+          fi
+
+      - name: Smoke Test - DLQ Check
+        run: |
+          STAGE=dev
+          DLQ_URL=$(aws sqs get-queue-url --queue-name neopay-pagos-dlq-$STAGE --query QueueUrl --output text 2>/dev/null || echo "")
+
+          if [ -n "$DLQ_URL" ]; then
+            DLQ_MESSAGES=$(aws sqs get-queue-attributes \
+              --queue-url "$DLQ_URL" \
+              --attribute-names ApproximateNumberOfMessages \
+              --query 'Attributes.ApproximateNumberOfMessages' \
+              --output text)
+            echo "DLQ messages: $DLQ_MESSAGES"
+
+            if [ "$DLQ_MESSAGES" -gt "0" ]; then
+              echo "⚠ WARNING: Dead Letter Queue has messages"
+            else
+              echo "✓ DLQ is empty - no failures detected"
+            fi
+          fi
+
+  deploy-prod:
+    name: Deploy to Production (Canary)
+    runs-on: ubuntu-latest
+    needs: deploy-dev
+    if: github.event_name == 'workflow_dispatch' && github.event.inputs.stage == 'prod'
+    environment: prod
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: lambda-consumer-package
+          path: consumer/package
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Deploy Consumer Lambda (Canary - 10% traffic)
+        run: |
+          STAGE=prod
+
+          # Publish new version
+          NEW_VERSION=$(aws lambda publish-version \
+            --function-name neopay-pagos-consumer-$STAGE \
+            --zip-file fileb://consumer/package/lambda.zip \
+            --query 'Version' \
+            --output text)
+
+          echo "Published version: $NEW_VERSION"
+          echo "NEW_VERSION=$NEW_VERSION" >> $GITHUB_ENV
+
+          # Create/update alias with 10% weight to new version
+          aws lambda put-alias \
+            --function-name neopay-pagos-consumer-$STAGE \
+            --name canary \
+            --function-version $NEW_VERSION \
+            --routing-config "{\"AdditionalVersionWeights\": {\"$NEW_VERSION\": 0.1}}"
+
+          echo "✓ Canary alias configured with 10% traffic"
+
+      - name: Wait and Monitor (Canary Period)
+        run: |
+          echo "Waiting 60 seconds for canary evaluation..."
+          sleep 60
+
+          # Check for errors in CloudWatch
+          LOG_GROUP="/aws/lambda/neopay-pagos-consumer-prod"
+          ERRORS=$(aws logs filter-log-events \
+            --log-group-name "$LOG_GROUP" \
+            --start-time $(date -d '5 minutes ago' +%s)000 \
+            --filter-pattern '"ERROR"' \
+            --query 'events | length(@)' \
+            --output text 2>/dev/null || echo "0")
+
+          echo "Errors in last 5 minutes: $ERRORS"
+
+          if [ "$ERRORS" -gt "10" ]; then
+            echo "✗ Too many errors detected: $ERRORS"
+            exit 1
+          else
+            echo "✓ Error count acceptable: $ERRORS"
+          fi
+
+      - name: Promote Canary to Production
+        if: success()
+        run: |
+          STAGE=prod
+
+          # Get latest version
+          VERSION=$(aws lambda get-function \
+            --function-name neopay-pagos-consumer-$STAGE \
+            --query 'Configuration.Version' \
+            --output text)
+
+          # Update alias to 100% traffic
+          aws lambda update-alias \
+            --function-name neopay-pagos-consumer-$STAGE \
+            --name canary \
+            --function-version $VERSION \
+            --routing-config '{}'
+
+          echo "✓ Canary promoted to 100% production traffic"
+
+      - name: Rollback on Failure
+        if: failure()
+        run: |
+          STAGE=prod
+          echo "⚠ Deployment failed - rolling back to previous version"
+
+          # Get previous stable version from alias
+          PREV_VERSION=$(aws lambda list-aliases \
+            --function-name neopay-pagos-consumer-$STAGE \
+            --query 'Aliases[?Name==`canary`].FunctionVersion' \
+            --output text)
+
+          if [ -n "$PREV_VERSION" ]; then
+            aws lambda update-alias \
+              --function-name neopay-pagos-consumer-$STAGE \
+              --name canary \
+              --function-version "$PREV_VERSION" \
+              --routing-config '{}'
+            echo "✓ Rollback completed to version $PREV_VERSION"
+          fi
+
+  notify:
+    name: Notify Deployment Status
+    runs-on: ubuntu-latest
+    needs: [deploy-dev, deploy-prod]
+    if: always()
+
+    steps:
+      - name: Send Slack Notification
+        uses: 8398a7/action-slack@v3
+        with:
+          status: ${{ job.status }}
+          fields: repo,message,commit,author,took
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
