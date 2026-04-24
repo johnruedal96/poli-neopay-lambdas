@@ -86,7 +86,7 @@ jobs:
     runs-on: ubuntu-latest
     needs: build
     if: github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'
-    environment: prod
+    environment: dev
     timeout-minutes: 30
 
     steps:
@@ -108,7 +108,7 @@ jobs:
 
       - name: Deploy Consumer Lambda (Canary - 10% traffic)
         run: |
-          STAGE=prod
+          STAGE=dev
 
           # Publish new version
           NEW_VERSION=$(aws lambda publish-version \
@@ -131,7 +131,7 @@ jobs:
 
       - name: Update Consumer Environment Variables
         run: |
-          STAGE=prod
+          STAGE=dev
           aws lambda update-function-configuration \
             --function-name neopay-pagos-consumer-$STAGE \
             --environment "Variables={DB_HOST=${{ secrets.DB_HOST }},DB_PORT=${{ secrets.DB_PORT }},DB_NAME=${{ secrets.DB_NAME }},DB_USER=${{ secrets.DB_USER }},DB_PASSWORD=${{ secrets.DB_PASSWORD }}}"
@@ -162,7 +162,7 @@ jobs:
       - name: Promote Canary to Production
         if: success()
         run: |
-          STAGE=prod
+          STAGE=dev
 
           # Get latest version
           VERSION=$(aws lambda get-function \
@@ -182,7 +182,7 @@ jobs:
       - name: Rollback on Failure
         if: failure()
         run: |
-          STAGE=prod
+          STAGE=dev
           echo "⚠ Deployment failed - rolling back to previous version"
 
           # Get previous stable version from alias
