@@ -115,106 +115,10 @@ jobs:
           name: lambda-consumer-package
           path: consumer/package/lambda.zip
 
-  deploy-dev:
-    name: Deploy to Dev
-    runs-on: ubuntu-latest
-    needs: build
-    if: github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'
-    environment: dev
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Download artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: lambda-consumer-package
-          path: consumer/package
-
-      - name: Configure AWS Credentials
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: ${{ env.AWS_REGION }}
-
-      - name: Deploy Consumer Lambda to Dev
-        run: |
-          STAGE=dev
-          aws lambda update-function-code \
-            --function-name neopay-pagos-consumer-$STAGE \
-            --zip-file fileb://consumer/package/lambda.zip \
-            --publish
-
-          aws lambda wait function-updated --function-name neopay-pagos-consumer-$STAGE
-
-      - name: Update Consumer Environment Variables
-        run: |
-          STAGE=dev
-          aws lambda update-function-configuration \
-            --function-name neopay-pagos-consumer-$STAGE \
-            --environment "Variables={DB_HOST=${{ secrets.DB_HOST }},DB_PORT=${{ secrets.DB_PORT }},DB_NAME=${{ secrets.DB_NAME }},DB_USER=${{ secrets.DB_USER }},DB_PASSWORD=${{ secrets.DB_PASSWORD }}}"
-
-      - name: Smoke Test - Lambda Invocation
-        run: |
-          STAGE=dev
-          echo "Waiting for Lambda to be ready..."
-          sleep 15
-
-          # Test Lambda invocation
-          aws lambda invoke \
-            --function-name neopay-pagos-consumer-$STAGE \
-            --payload '{"test": true}' \
-            --log-type Tail \
-            response.json
-
-          if [ -f response.json ]; then
-            echo "✓ Lambda invocation successful"
-          else
-            echo "✗ Lambda invocation failed"
-            exit 1
-          fi
-
-      - name: Smoke Test - Database Connection
-        run: |
-          STAGE=dev
-          # Check Lambda configuration
-          CONFIG=$(aws lambda get-function-configuration \
-            --function-name neopay-pagos-consumer-$STAGE \
-            --query 'Environment.Variables' \
-            --output json)
-
-          if echo "$CONFIG" | grep -q "DB_HOST"; then
-            echo "✓ Database configuration present"
-          else
-            echo "✗ Database configuration missing"
-            exit 1
-          fi
-
-      - name: Smoke Test - DLQ Check
-        run: |
-          STAGE=dev
-          DLQ_URL=$(aws sqs get-queue-url --queue-name neopay-pagos-dlq-$STAGE --query QueueUrl --output text 2>/dev/null || echo "")
-
-          if [ -n "$DLQ_URL" ]; then
-            DLQ_MESSAGES=$(aws sqs get-queue-attributes \
-              --queue-url "$DLQ_URL" \
-              --attribute-names ApproximateNumberOfMessages \
-              --query 'Attributes.ApproximateNumberOfMessages' \
-              --output text)
-            echo "DLQ messages: $DLQ_MESSAGES"
-
-            if [ "$DLQ_MESSAGES" -gt "0" ]; then
-              echo "⚠ WARNING: Dead Letter Queue has messages"
-            else
-              echo "✓ DLQ is empty - no failures detected"
-            fi
-          fi
-
-  deploy-prod:
+  deploy:
     name: Deploy to Production (Canary)
     runs-on: ubuntu-latest
-    needs: deploy-dev
+    needs: build
     if: github.event_name == 'workflow_dispatch' && github.event.inputs.stage == 'prod'
     environment: prod
     timeout-minutes: 30
@@ -258,6 +162,13 @@ jobs:
             --routing-config "{\"AdditionalVersionWeights\": {\"$NEW_VERSION\": 0.1}}"
 
           echo "✓ Canary alias configured with 10% traffic"
+
+      - name: Update Consumer Environment Variables
+        run: |
+          STAGE=prod
+          aws lambda update-function-configuration \
+            --function-name neopay-pagos-consumer-$STAGE \
+            --environment "Variables={DB_HOST=${{ secrets.DB_HOST }},DB_PORT=${{ secrets.DB_PORT }},DB_NAME=${{ secrets.DB_NAME }},DB_USER=${{ secrets.DB_USER }},DB_PASSWORD=${{ secrets.DB_PASSWORD }}}"
 
       - name: Wait and Monitor (Canary Period)
         run: |
@@ -326,7 +237,7 @@ jobs:
   notify:
     name: Notify Deployment Status
     runs-on: ubuntu-latest
-    needs: [deploy-dev, deploy-prod]
+    needs: deploy
     if: always()
 
     steps:

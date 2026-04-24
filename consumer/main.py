@@ -35,7 +35,6 @@ def _ensure_table(cur) -> None:
             created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
         );
         """
-        
     )
 
 
