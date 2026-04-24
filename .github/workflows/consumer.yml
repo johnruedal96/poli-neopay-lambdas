@@ -110,9 +110,19 @@ jobs:
       - name: Deploy Consumer Lambda (Canary - 10% traffic)
         run: |
           cd consumer/package
+          
+          aws lambda update-function-code \
+            --function-name neopay-pagos-consumer-${{ env.STAGE }} \
+            --zip-file fileb://lambda.zip
+
+          aws lambda update-function-configuration \
+            --function-name neopay-pagos-consumer-${{ env.STAGE }} \
+            --environment "Variables={DB_HOST=${{ secrets.DB_HOST }},DB_PORT=${{ secrets.DB_PORT }},DB_NAME=${{ secrets.DB_NAME }},DB_USER=${{ secrets.DB_USER }},DB_PASSWORD=${{ secrets.DB_PASSWORD }}}"
+
+          sleep 10
+
           NEW_VERSION=$(aws lambda publish-version \
             --function-name neopay-pagos-consumer-${{ env.STAGE }} \
-            --zip-file fileb://lambda.zip \
             --query 'Version' \
             --output text)
 
@@ -126,14 +136,6 @@ jobs:
             --routing-config "{\"AdditionalVersionWeights\": {\"$NEW_VERSION\": 0.1}}"
 
           echo "✓ Canary alias configured with 10% traffic"
-
-      - name: Update Consumer Environment Variables
-        run: |
-          STAGE=${{ env.STAGE }}
-          aws lambda update-function-configuration \
-            --function-name neopay-pagos-consumer-$STAGE \
-            --environment "Variables={DB_HOST=${{ secrets.DB_HOST }},DB_PORT=${{ secrets.DB_PORT }},DB_NAME=${{ secrets.DB_NAME }},DB_USER=${{ secrets.DB_USER }},DB_PASSWORD=${{ secrets.DB_PASSWORD }}"
-
       - name: Wait and Monitor (Canary Period)
         run: |
           echo "Waiting 60 seconds for canary evaluation..."
