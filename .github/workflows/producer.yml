@@ -3,8 +3,8 @@ name: Deploy Producer Lambda
 on:
   push:
     branches: [main]
-    # paths:
-    #   - 'producer/**'
+    paths:
+      - 'producer/**'
   workflow_dispatch:
 
 env:
