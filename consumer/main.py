@@ -21,6 +21,7 @@ def _connect():
         database=DB_NAME,
     )
 
+
 def _ensure_table(cur) -> None:
     cur.execute(
         """
