@@ -139,7 +139,13 @@ jobs:
           echo "NEW_VERSION=$NEW_VERSION" >> $GITHUB_ENV
 
           echo "Configurando Alias Canary con 10% de tráfico"
-          aws lambda put-alias \
+          aws lambda update-alias \
+            --function-name neopay-pagos-consumer-${{ env.STAGE }} \
+            --name canary \
+            --function-version $NEW_VERSION \
+            --routing-config "{\"AdditionalVersionWeights\": {\"$NEW_VERSION\": 0.1}}" || \
+
+          aws lambda create-alias
             --function-name neopay-pagos-consumer-${{ env.STAGE }} \
             --name canary \
             --function-version $NEW_VERSION \
