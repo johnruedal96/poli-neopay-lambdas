@@ -146,16 +146,14 @@ jobs:
             --query 'FunctionVersion' \
             --output text 2>/dev/null || echo "")
 
-          if [ -z "$CURRENT_VERSION" ] || [ "$CURRENT_VERSION" == "$NEW_VERSION" ]; then
-            echo "Creando alias apuntando al 100% a la versión $NEW_VERSION"
-            aws lambda create-alias \
-              --function-name neopay-pagos-consumer-${{ env.STAGE }} \
-              --name canary --function-version $NEW_VERSION || \
+          if [ -z "$CURRENT_VERSION" ] || [ "$CURRENT_VERSION" == "\$LATEST" ] || [ "$CURRENT_VERSION" == "$NEW_VERSION" ]; then
+            echo "Creando o limpiando alias hacia versión fija $NEW_VERSION"
             aws lambda update-alias \
               --function-name neopay-pagos-consumer-${{ env.STAGE }} \
-              --name canary \
-              --function-version $NEW_VERSION \
-              --routing-config "{}"
+              --name canary --function-version $NEW_VERSION --routing-config "{}" || \
+            aws lambda create-alias \
+              --function-name neopay-pagos-consumer-${{ env.STAGE }} \
+              --name canary --function-version $NEW_VERSION
           else
             echo "Configurando Canary (10%)"
             aws lambda update-alias \
@@ -192,11 +190,7 @@ jobs:
         if: success()
         run: |
           STAGE=${{ env.STAGE }}
-
-          VERSION=$(aws lambda get-function \
-            --function-name neopay-pagos-consumer-$STAGE \
-            --query 'Configuration.Version' \
-            --output text)
+          VERSION=${{ env.NEW_VERSION }}
 
           aws lambda update-alias \
             --function-name neopay-pagos-consumer-$STAGE \
