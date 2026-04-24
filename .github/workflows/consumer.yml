@@ -110,11 +110,9 @@ jobs:
       - name: Deploy Consumer Lambda (Canary - 10% traffic)
         run: |
           cd consumer/package
-          base64 -d lambda.zip > lambda-decoded.zip
-
           NEW_VERSION=$(aws lambda publish-version \
             --function-name neopay-pagos-consumer-${{ env.STAGE }} \
-            --zip-file fileb://lambda-decoded.zip \
+            --zip-file fileb://lambda.zip \
             --query 'Version' \
             --output text)
 
