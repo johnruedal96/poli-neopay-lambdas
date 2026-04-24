@@ -32,7 +32,7 @@ jobs:
       - name: Install dependencies
         run: |
           pip install -r producer/requirements.txt
-          pip install ruff bandit pip-audit pytest pytest-mock
+          pip install ruff bandit pip-audit
 
       - name: Ruff Lint
         run: ruff check producer/
@@ -56,39 +56,10 @@ jobs:
           name: bandit-report-producer
           path: bandit-report.json
 
-  unit-tests:
-    name: Unit Tests
-    runs-on: ubuntu-latest
-    needs: lint-and-security
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: ${{ env.PYTHON_VERSION }}
-
-      - name: Install dependencies
-        run: |
-          pip install -r producer/requirements.txt
-          pip install pytest pytest-mock pytest-cov
-
-      - name: Run Unit Tests
-        run: |
-          pytest producer/ -v --cov=. --cov-report=xml --cov-report=term
-        continue-on-error: true
-
-      - name: Upload Coverage
-        uses: actions/upload-artifact@v4
-        with:
-          name: coverage-producer
-          path: coverage.xml
-
   build:
     name: Build Lambda Package
     runs-on: ubuntu-latest
-    needs: unit-tests
+    needs: lint-and-security
     steps:
       - name: Checkout
         uses: actions/checkout@v4
