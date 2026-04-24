@@ -3,8 +3,8 @@ name: Deploy Producer Lambda
 on:
   push:
     branches: [main]
-    paths:
-      - 'producer/**'
+    # paths:
+    #   - 'producer/**'
   workflow_dispatch:
 
 env:
@@ -110,33 +110,60 @@ jobs:
       - name: Deploy Producer Lambda (Canary - 10% traffic)
         run: |
           cd producer/package
-          base64 -d lambda.zip > lambda-decoded.zip
+          
+          echo "Cargando nuevo código..."
+          aws lambda update-function-code \
+            --function-name neopay-pagos-producer-${{ env.STAGE }} \
+            --zip-file fileb://lambda.zip
 
+          echo "Esperando a que el código se procese..."
+          aws lambda wait function-updated \
+            --function-name neopay-pagos-producer-${{ env.STAGE }}
+
+          echo "Actualizando configuración de variables de entorno..."
+          aws lambda update-function-configuration \
+            --function-name neopay-pagos-producer-${{ env.STAGE }} \
+            --environment "Variables={DB_HOST=${{ secrets.DB_HOST }},DB_PORT=${{ secrets.DB_PORT }},DB_NAME=${{ secrets.DB_NAME }},DB_USER=${{ secrets.DB_USER }},DB_PASSWORD=${{ secrets.DB_PASSWORD }}}"
+
+          echo "Esperando a que la configuración se procese..."
+          aws lambda wait function-updated \
+            --function-name neopay-pagos-producer-${{ env.STAGE }}
+
+          echo "Publicando nueva versión"
           NEW_VERSION=$(aws lambda publish-version \
             --function-name neopay-pagos-producer-${{ env.STAGE }} \
-            --zip-file fileb://lambda-decoded.zip \
             --query 'Version' \
             --output text)
 
           echo "Published version: $NEW_VERSION"
           echo "NEW_VERSION=$NEW_VERSION" >> $GITHUB_ENV
 
-          aws lambda put-alias \
+          echo "Configurando Alias Canary con 10% de tráfico"
+          
+          CURRENT_VERSION=$(aws lambda get-alias \
             --function-name neopay-pagos-producer-${{ env.STAGE }} \
             --name canary \
-            --function-version $NEW_VERSION \
-            --routing-config "{\"AdditionalVersionWeights\": {\"$NEW_VERSION\": 0.1}}"
+            --query 'FunctionVersion' \
+            --output text 2>/dev/null || echo "")
 
-          echo "✓ Canary alias configured with 10% traffic"
+          if [ -z "$CURRENT_VERSION" ] || [ "$CURRENT_VERSION" == "\$LATEST" ] || [ "$CURRENT_VERSION" == "$NEW_VERSION" ]; then
+            echo "Creando o limpiando alias hacia versión fija $NEW_VERSION"
+            aws lambda update-alias \
+              --function-name neopay-pagos-producer-${{ env.STAGE }} \
+              --name canary --function-version $NEW_VERSION --routing-config "{}" || \
+            aws lambda create-alias \
+              --function-name neopay-pagos-producer-${{ env.STAGE }} \
+              --name canary --function-version $NEW_VERSION
+          else
+            echo "Configurando Canary (10%)"
+            aws lambda update-alias \
+              --function-name neopay-pagos-producer-${{ env.STAGE }} \
+              --name canary \
+              --function-version $CURRENT_VERSION \
+              --routing-config "{\"AdditionalVersionWeights\": {\"$NEW_VERSION\": 0.1}}"
+          fi
 
-      - name: Update Producer Environment Variables
-        run: |
-          STAGE=${{ env.STAGE }}
-          QUEUE_URL=$(aws sqs get-queue-url --queue-name neopay-pagos-$STAGE --query QueueUrl --output text)
-          aws lambda update-function-configuration \
-            --function-name neopay-pagos-producer-$STAGE \
-            --environment "Variables={QUEUE_URL=$QUEUE_URL}"
-
+          echo "✓ Canary alias configured successfully"
       - name: Wait and Monitor (Canary Period)
         run: |
           echo "Waiting 60 seconds for canary evaluation..."
@@ -163,11 +190,7 @@ jobs:
         if: success()
         run: |
           STAGE=${{ env.STAGE }}
-
-          VERSION=$(aws lambda get-function \
-            --function-name neopay-pagos-producer-$STAGE \
-            --query 'Configuration.Version' \
-            --output text)
+          VERSION=${{ env.NEW_VERSION }}
 
           aws lambda update-alias \
             --function-name neopay-pagos-producer-$STAGE \
@@ -196,18 +219,3 @@ jobs:
               --routing-config '{}'
             echo "✓ Rollback completed to version $PREV_VERSION"
           fi
-
-  notify:
-    name: Notify Deployment Status
-    runs-on: ubuntu-latest
-    needs: deploy
-    if: always()
-
-    steps:
-      - name: Send Slack Notification
-        uses: 8398a7/action-slack@v3
-        with:
-          status: ${{ job.status }}
-          fields: repo,message,commit,author,took
-        env:
-          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}

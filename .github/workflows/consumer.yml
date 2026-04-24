@@ -3,8 +3,8 @@ name: Deploy Consumer Lambda
 on:
   push:
     branches: [main]
-    # paths:
-    #   - 'consumer/**'
+    paths:
+      - 'consumer/**'
   workflow_dispatch:
 
 env:
