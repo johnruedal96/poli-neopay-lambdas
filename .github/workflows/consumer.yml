@@ -109,11 +109,12 @@ jobs:
 
       - name: Deploy Consumer Lambda (Canary - 10% traffic)
         run: |
-          STAGE=${{ env.STAGE }}
+          cd consumer/package
+          base64 -d lambda.zip > lambda-decoded.zip
 
           NEW_VERSION=$(aws lambda publish-version \
-            --function-name neopay-pagos-consumer-$STAGE \
-            --zip-file fileb://$(cat consumer/package/lambda.zip | base64) \
+            --function-name neopay-pagos-consumer-${{ env.STAGE }} \
+            --zip-file fileb://lambda-decoded.zip \
             --query 'Version' \
             --output text)
 
@@ -121,7 +122,7 @@ jobs:
           echo "NEW_VERSION=$NEW_VERSION" >> $GITHUB_ENV
 
           aws lambda put-alias \
-            --function-name neopay-pagos-consumer-$STAGE \
+            --function-name neopay-pagos-consumer-${{ env.STAGE }} \
             --name canary \
             --function-version $NEW_VERSION \
             --routing-config "{\"AdditionalVersionWeights\": {\"$NEW_VERSION\": 0.1}}"
