@@ -111,16 +111,25 @@ jobs:
         run: |
           cd consumer/package
           
+          echo "Cargando nuevo código..."
           aws lambda update-function-code \
             --function-name neopay-pagos-consumer-${{ env.STAGE }} \
             --zip-file fileb://lambda.zip
 
+          echo "Esperando a que el código se procese..."
+          aws lambda wait function-updated \
+            --function-name neopay-pagos-consumer-${{ env.STAGE }}
+
+          echo "Actualizando configuración de variables de entorno..."
           aws lambda update-function-configuration \
             --function-name neopay-pagos-consumer-${{ env.STAGE }} \
             --environment "Variables={DB_HOST=${{ secrets.DB_HOST }},DB_PORT=${{ secrets.DB_PORT }},DB_NAME=${{ secrets.DB_NAME }},DB_USER=${{ secrets.DB_USER }},DB_PASSWORD=${{ secrets.DB_PASSWORD }}}"
 
-          sleep 10
+          echo "Esperando a que la configuración se procese..."
+          aws lambda wait function-updated \
+            --function-name neopay-pagos-consumer-${{ env.STAGE }}
 
+          echo "Publicando nueva versión"
           NEW_VERSION=$(aws lambda publish-version \
             --function-name neopay-pagos-consumer-${{ env.STAGE }} \
             --query 'Version' \
@@ -129,13 +138,14 @@ jobs:
           echo "Published version: $NEW_VERSION"
           echo "NEW_VERSION=$NEW_VERSION" >> $GITHUB_ENV
 
+          echo "Configurando Alias Canary con 10% de tráfico"
           aws lambda put-alias \
             --function-name neopay-pagos-consumer-${{ env.STAGE }} \
             --name canary \
             --function-version $NEW_VERSION \
             --routing-config "{\"AdditionalVersionWeights\": {\"$NEW_VERSION\": 0.1}}"
 
-          echo "✓ Canary alias configured with 10% traffic"
+          echo "✓ Canary alias configured successfully"
       - name: Wait and Monitor (Canary Period)
         run: |
           echo "Waiting 60 seconds for canary evaluation..."
