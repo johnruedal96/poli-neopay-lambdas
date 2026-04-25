@@ -36,18 +36,28 @@ jobs:
       - name: Ruff Format Check
         run: ruff format --check consumer/
 
-      - name: Bandit Security Scan
-        run: bandit -r consumer/ -f json -o bandit-report.json
-        continue-on-error: true
-
-      - name: pip-audit (Dependency Vulnerabilities)
+      - name: Bandit Security Scan (SAST)
         run: |
-          pip-audit -r consumer/requirements.txt || true
-        continue-on-error: true
+          bandit -r consumer/ -f json -o bandit-report.json -ll
+          echo "✓ No se detectaron patrones de código inseguros (credenciales hardcodeadas, etc.)"
+
+      - name: pip-audit – Vulnerabilidades en dependencias (SCA)
+        run: |
+          pip-audit -r consumer/requirements.txt --desc --fix --dry-run
+          echo "✓ Sin vulnerabilidades críticas en dependencias"
+
+      - name: Verificar ausencia de secretos hardcodeados
+        run: |
+          echo "Buscando posibles credenciales en texto plano..."
+          if grep -rEin '(password|secret|api_key|token)\s*=\s*["\x27][^${\x27"]+["\x27]' consumer/ --include='*.py' | grep -v 'os.environ'; then
+            echo "✗ Se detectaron posibles credenciales hardcodeadas. El deploy se bloquea."
+            exit 1
+          fi
+          echo "✓ No se encontraron credenciales en texto plano"
 
       - name: Upload Bandit Report
         uses: actions/upload-artifact@v4
-        if: failure()
+        if: always()
         with:
           name: bandit-report-consumer
           path: bandit-report.json
